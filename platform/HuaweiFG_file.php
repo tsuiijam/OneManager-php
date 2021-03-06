@@ -39,14 +39,6 @@ function GetGlobalVariable($event)
         $pos = strpos($cookievalues,"=");
         $_COOKIE[urldecode(substr($cookievalues,0,$pos))]=urldecode(substr($cookievalues,$pos+1));
     }
-    $_SERVER['HTTP_USER_AGENT'] = $event['headers']['user-agent'];
-    if (isset($event['headers']['authorization'])) {
-        $basicAuth = splitfirst(base64_decode(splitfirst($event['headers']['authorization'], 'Basic ')[1]), ':');
-        $_SERVER['PHP_AUTH_USER'] = $basicAuth[0];
-        $_SERVER['PHP_AUTH_PW'] = $basicAuth[1];
-    }
-    $_SERVER['HTTP_TRANSLATE'] = $event['headers']['translate'];//'f'
-    $_SERVER['_APP_SHARE_DIR'] = '/var/share/CFF/processrouter';
 }
 
 function GetPathSetting($event, $context)
@@ -69,6 +61,18 @@ function GetPathSetting($event, $context)
     $_SERVER['PHP_SELF'] = path_format($_SERVER['base_path'] . $path);
     $_SERVER['REMOTE_ADDR'] = $event['headers']['x-real-ip'];
     $_SERVER['HTTP_X_REQUESTED_WITH'] = $event['headers']['x-requested-with'];
+    $_SERVER['HTTP_USER_AGENT'] = $event['headers']['user-agent'];
+    if (isset($event['headers']['authorization'])) {
+        $basicAuth = splitfirst(base64_decode(splitfirst($event['headers']['authorization'], 'Basic ')[1]), ':');
+        $_SERVER['PHP_AUTH_USER'] = $basicAuth[0];
+        $_SERVER['PHP_AUTH_PW'] = $basicAuth[1];
+    }
+    $_SERVER['REQUEST_SCHEME'] = $event['headers']['x-forwarded-proto'];
+    $_SERVER['host'] = $_SERVER['REQUEST_SCHEME'] . '://' . $_SERVER['HTTP_HOST'];
+    //if ($_SERVER['HTTP_REFERER']!='') 
+    $_SERVER['referhost'] = explode('/', $event['headers']['referer'])[2];
+    $_SERVER['HTTP_TRANSLATE'] = $event['headers']['translate'];//'f'
+    $_SERVER['_APP_SHARE_DIR'] = '/var/share/CFF/processrouter';
     return $path;
 }
 
@@ -112,7 +116,10 @@ function setConfig($arr, $disktag = '')
     $indisk = 0;
     $operatedisk = 0;
     foreach ($arr as $k => $v) {
-        if (isInnerEnv($k)) {
+        if (isCommonEnv($k)) {
+            if (isBase64Env($k)) $envs[$k] = base64y_encode($v);
+            else $envs[$k] = $v;
+        } elseif (isInnerEnv($k)) {
             if (isBase64Env($k)) $envs[$disktag][$k] = base64y_encode($v);
             else $envs[$disktag][$k] = $v;
             $indisk = 1;
@@ -123,11 +130,15 @@ function setConfig($arr, $disktag = '')
             $disktags = array_diff($disktags, [ $v ]);
             $envs[$v] = '';
             $operatedisk = 1;
+        } elseif ($k=='disktag_copy') {
+            $newtag = $v . '_' . date("Ymd_His");
+            $envs[$newtag] = $envs[$v];
+            array_push($disktags, $newtag);
+            $operatedisk = 1;
         } elseif ($k=='disktag_rename' || $k=='disktag_newname') {
             if ($arr['disktag_rename']!=$arr['disktag_newname']) $operatedisk = 1;
         } else {
-            if (isBase64Env($k)) $envs[$k] = base64y_encode($v);
-            else $envs[$k] = $v;
+            $envs[$k] = $v;
         }
     }
     if ($indisk) {
@@ -138,7 +149,12 @@ function setConfig($arr, $disktag = '')
     }
     if ($operatedisk) {
         if (isset($arr['disktag_newname']) && $arr['disktag_newname']!='') {
-            $envs['disktag'] = str_replace($arr['disktag_rename'], $arr['disktag_newname'], getConfig('disktag'));
+            $tags = [];
+            foreach ($disktags as $tag) {
+                if ($tag==$arr['disktag_rename']) array_push($tags, $arr['disktag_newname']);
+                else array_push($tags, $tag);
+            }
+            $envs['disktag'] = implode('|', $tags);
             $envs[$arr['disktag_newname']] = $envs[$arr['disktag_rename']];
             $envs[$arr['disktag_rename']] = '';
         } else {

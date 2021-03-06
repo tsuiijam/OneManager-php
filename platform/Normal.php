@@ -4,6 +4,9 @@ function getpath()
 {
     $_SERVER['firstacceptlanguage'] = strtolower(splitfirst(splitfirst($_SERVER['HTTP_ACCEPT_LANGUAGE'],';')[0],',')[0]);
     if (isset($_SERVER['HTTP_X_FORWARDED_FOR'])) $_SERVER['REMOTE_ADDR'] = $_SERVER['HTTP_X_FORWARDED_FOR'];
+    $_SERVER['host'] = $_SERVER['REQUEST_SCHEME'] . '://' . $_SERVER['HTTP_HOST'];
+    //if ($_SERVER['HTTP_REFERER']!='') 
+    $_SERVER['referhost'] = explode('/', $_SERVER['HTTP_REFERER'])[2];
     if (isset($_SERVER['DOCUMENT_ROOT'])&&$_SERVER['DOCUMENT_ROOT']==='/app') $_SERVER['base_path'] = '/';
     else $_SERVER['base_path'] = path_format(substr($_SERVER['SCRIPT_NAME'], 0, -10) . '/');
     if (isset($_SERVER['UNENCODED_URL'])) $_SERVER['REQUEST_URI'] = $_SERVER['UNENCODED_URL'];
@@ -94,7 +97,10 @@ function setConfig($arr, $disktag = '')
     $indisk = 0;
     $operatedisk = 0;
     foreach ($arr as $k => $v) {
-        if (isInnerEnv($k)) {
+        if (isCommonEnv($k)) {
+            if (isBase64Env($k)) $envs[$k] = base64y_encode($v);
+            else $envs[$k] = $v;
+        } elseif (isInnerEnv($k)) {
             if (isBase64Env($k)) $envs[$disktag][$k] = base64y_encode($v);
             else $envs[$disktag][$k] = $v;
             $indisk = 1;
@@ -105,11 +111,20 @@ function setConfig($arr, $disktag = '')
             $disktags = array_diff($disktags, [ $v ]);
             $envs[$v] = '';
             $operatedisk = 1;
+        } elseif ($k=='disktag_copy') {
+            $newtag = $v . '_' . date("Ymd_His");
+            $envs[$newtag] = $envs[$v];
+            array_push($disktags, $newtag);
+            $operatedisk = 1;
         } elseif ($k=='disktag_rename' || $k=='disktag_newname') {
             if ($arr['disktag_rename']!=$arr['disktag_newname']) $operatedisk = 1;
         } else {
-            if (isBase64Env($k)) $envs[$k] = base64y_encode($v);
-            else $envs[$k] = $v;
+            //$tmpdisk = json_decode($v, true);
+            //var_dump($tmpdisk);
+            //error_log(json_encode($tmpdisk));
+            //if ($tmpdisk===null) 
+            $envs[$k] = $v;
+            //else $envs[$k] = $tmpdisk;
         }
     }
     if ($indisk) {
@@ -120,7 +135,12 @@ function setConfig($arr, $disktag = '')
     }
     if ($operatedisk) {
         if (isset($arr['disktag_newname']) && $arr['disktag_newname']!='') {
-            $envs['disktag'] = str_replace($arr['disktag_rename'], $arr['disktag_newname'], getConfig('disktag'));
+            $tags = [];
+            foreach ($disktags as $tag) {
+                if ($tag==$arr['disktag_rename']) array_push($tags, $arr['disktag_newname']);
+                else array_push($tags, $tag);
+            }
+            $envs['disktag'] = implode('|', $tags);
             $envs[$arr['disktag_newname']] = $envs[$arr['disktag_rename']];
             unset($envs[$arr['disktag_rename']]);
         } else {

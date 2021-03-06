@@ -2,8 +2,35 @@
 
 function getpath()
 {
+    if (getConfig('function_name') && getConfig('APIKey')) {
+        $APIKey = getConfig('APIKey');
+        $res = HerokuAPI('GET', 'https://api.heroku.com/apps/' . getConfig('function_name'), '', $APIKey);
+        $response = json_decode($res['body'], true);
+        if (isset($response['build_stack'])) {
+            $tmp['HerokuappId'] = $response['id'];
+            $tmp['function_name'] = null;
+        } else {
+            error_log1('Something error' . 'Get Heroku app id: ' . json_encode($res, JSON_PRETTY_PRINT));
+            //return message('Get Heroku app id: ' . json_encode($res, JSON_PRETTY_PRINT), 'Something error', 500);
+        }
+        $response = json_decode(setHerokuConfig($tmp, $tmp['HerokuappId'], $APIKey)['body'], true);
+        $title = 'Change function_name to HerokuappId';
+        if (api_error($response)) {
+            $html = api_error_msg($response);
+            $stat = 500;
+            error_log1('Change function_name to HerokuappId' . $html);
+        } else {
+            $html = getconstStr('Wait') . ' 5s, jump to index.
+            <meta http-equiv="refresh" content="5;URL=/">';
+            $stat = 201;
+        }
+        //return message($html, $title, $stat);
+    }
     $_SERVER['firstacceptlanguage'] = strtolower(splitfirst(splitfirst($_SERVER['HTTP_ACCEPT_LANGUAGE'],';')[0],',')[0]);
     $_SERVER['REMOTE_ADDR'] = $_SERVER['HTTP_X_FORWARDED_FOR'];
+    $_SERVER['REQUEST_SCHEME'] = $_SERVER['HTTP_X_FORWARDED_PROTO'];
+    $_SERVER['host'] = $_SERVER['REQUEST_SCHEME'] . '://' . $_SERVER['HTTP_HOST'];
+    $_SERVER['referhost'] = explode('/', $_SERVER['HTTP_REFERER'])[2];
     $_SERVER['base_path'] = path_format(substr($_SERVER['SCRIPT_NAME'], 0, -10) . '/');
     $p = strpos($_SERVER['REQUEST_URI'],'?');
     if ($p>0) $path = substr($_SERVER['REQUEST_URI'], 0, $p);
@@ -81,7 +108,10 @@ function setConfig($arr, $disktag = '')
     $indisk = 0;
     $operatedisk = 0;
     foreach ($arr as $k => $v) {
-        if (isInnerEnv($k)) {
+        if (isCommonEnv($k)) {
+            if (isBase64Env($k)) $tmp[$k] = base64y_encode($v);
+            else $tmp[$k] = $v;
+        } elseif (isInnerEnv($k)) {
             if (isBase64Env($k)) $diskconfig[$k] = base64y_encode($v);
             else $diskconfig[$k] = $v;
             $indisk = 1;
@@ -92,11 +122,15 @@ function setConfig($arr, $disktag = '')
             $disktags = array_diff($disktags, [ $v ]);
             $tmp[$v] = '';
             $operatedisk = 1;
+        } elseif ($k=='disktag_copy') {
+            $newtag = $v . '_' . date("Ymd_His");
+            $tmp[$newtag] = getConfig($v);
+            array_push($disktags, $newtag);
+            $operatedisk = 1;
         } elseif ($k=='disktag_rename' || $k=='disktag_newname') {
             if ($arr['disktag_rename']!=$arr['disktag_newname']) $operatedisk = 1;
         } else {
-            if (isBase64Env($k)) $tmp[$k] = base64y_encode($v);
-            else $tmp[$k] = $v;
+            $tmp[$k] = json_encode($v);
         }
     }
     if ($indisk) {
@@ -106,7 +140,12 @@ function setConfig($arr, $disktag = '')
     }
     if ($operatedisk) {
         if (isset($arr['disktag_newname']) && $arr['disktag_newname']!='') {
-            $tmp['disktag'] = str_replace($arr['disktag_rename'], $arr['disktag_newname'], getConfig('disktag'));
+            $tags = [];
+            foreach ($disktags as $tag) {
+                if ($tag==$arr['disktag_rename']) array_push($tags, $arr['disktag_newname']);
+                else array_push($tags, $tag);
+            }
+            $tmp['disktag'] = implode('|', $tags);
             $tmp[$arr['disktag_newname']] = getConfig($arr['disktag_rename']);
             $tmp[$arr['disktag_rename']] = null;
         } else {
@@ -118,7 +157,7 @@ function setConfig($arr, $disktag = '')
     }
     foreach ($tmp as $key => $val) if ($val=='') $tmp[$key]=null;
 
-    return setHerokuConfig($tmp, getConfig('function_name'), getConfig('APIKey'));
+    return setHerokuConfig($tmp, getConfig('HerokuappId'), getConfig('APIKey'));
     error_log1(json_encode($arr, JSON_PRETTY_PRINT) . ' => tmp：' . json_encode($tmp, JSON_PRETTY_PRINT));
 }
 
@@ -135,15 +174,25 @@ function install()
                 $APIKey = $_POST['APIKey'];
                 $tmp['APIKey'] = $APIKey;
             }
-            $function_name = getConfig('function_name');
-            if ($function_name=='') {
-		        $tmp1 = substr($_SERVER['HTTP_HOST'], 0, strrpos($_SERVER['HTTP_HOST'], '.'));
-		        $maindomain = substr($tmp1, strrpos($tmp1, '.')+1);
-		        if ($maindomain=='herokuapp') $function_name = substr($tmp1, 0, strrpos($tmp1, '.'));
-                else $function_name = 'visit from xxxx.herokuapp.com';
-                $tmp['function_name'] = $function_name;
-	        }
-            $response = json_decode(setHerokuConfig($tmp, $function_name, $APIKey)['body'], true);
+            $HerokuappId = getConfig('HerokuappId');
+            if ($HerokuappId=='') {
+                $function_name = getConfig('function_name');
+                if ($function_name=='') {
+                    $tmp1 = substr($_SERVER['HTTP_HOST'], 0, strrpos($_SERVER['HTTP_HOST'], '.'));
+                    $maindomain = substr($tmp1, strrpos($tmp1, '.')+1);
+                    if ($maindomain=='herokuapp') $function_name = substr($tmp1, 0, strrpos($tmp1, '.'));
+                    else return message('Please visit from xxxx.herokuapp.com', '', 500);
+                    $res = HerokuAPI('GET', 'https://api.heroku.com/apps/' . $function_name, '', $APIKey);
+                    $response = json_decode($res['body'], true);
+                    if (isset($response['build_stack'])) {
+                        $HerokuappId = $response['id'];
+                    } else {
+                        return message('Get Heroku app id: ' . json_encode($res, JSON_PRETTY_PRINT), 'Something error', 500);
+                    }
+                }
+            }
+            $tmp['HerokuappId'] = $HerokuappId;
+            $response = json_decode(setHerokuConfig($tmp, $HerokuappId, $APIKey)['body'], true);
             if (api_error($response)) {
                 $html = api_error_msg($response);
                 $title = 'Error';
@@ -151,7 +200,7 @@ function install()
                 return output('Jump
     <script>
         var expd = new Date();
-        expd.setTime(expd.getTime()+(2*60*60*1000));
+        expd.setTime(expd.getTime()+1000);
         var expires = "expires="+expd.toGMTString();
         document.cookie=\'language=; path=/; \'+expires;
     </script>
@@ -248,22 +297,22 @@ function HerokuAPI($method, $url, $data = '', $apikey)
     return $response;
 }
 
-function getHerokuConfig($function_name, $apikey)
+function getHerokuConfig($HerokuappId, $apikey)
 {
-    return HerokuAPI('GET', 'https://api.heroku.com/apps/' . $function_name . '/config-vars', '', $apikey);
+    return HerokuAPI('GET', 'https://api.heroku.com/apps/' . $HerokuappId . '/config-vars', '', $apikey);
 }
 
-function setHerokuConfig($env, $function_name, $apikey)
+function setHerokuConfig($env, $HerokuappId, $apikey)
 {
     $data = json_encode($env);
-    if (substr($data, 0, 1)=='{') return HerokuAPI('PATCH', 'https://api.heroku.com/apps/' . $function_name . '/config-vars', $data, $apikey);
+    if (substr($data, 0, 1)=='{') return HerokuAPI('PATCH', 'https://api.heroku.com/apps/' . $HerokuappId . '/config-vars', $data, $apikey);
 }
 
-function updateHerokuapp($function_name, $apikey, $source)
+function updateHerokuapp($HerokuappId, $apikey, $source)
 {
     $tmp['source_blob']['url'] = $source;
     $data = json_encode($tmp);
-    return HerokuAPI('POST', 'https://api.heroku.com/apps/' . $function_name . '/builds', $data, $apikey);
+    return HerokuAPI('POST', 'https://api.heroku.com/apps/' . $HerokuappId . '/builds', $data, $apikey);
 }
 
 function api_error($response)
@@ -283,7 +332,7 @@ function OnekeyUpate($auth = 'qkqpttgf', $project = 'OneManager-php', $branch = 
 {
     //'https://github.com/qkqpttgf/OneManager-php/tarball/master/';
     $source = 'https://github.com/' . $auth . '/' . $project . '/tarball/' . urlencode($branch) . '/';
-    return updateHerokuapp(getConfig('function_name'), getConfig('APIKey'), $source);
+    return updateHerokuapp(getConfig('HerokuappId'), getConfig('APIKey'), $source);
 }
 
 function setConfigResponse($response)
